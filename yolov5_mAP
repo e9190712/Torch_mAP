@@ -290,7 +290,12 @@ class_list = ['person', 'bicycle', 'car', 'motorcycle', 'bus', 'train', 'truck']
 catIDs = []
 imgIds = coco.getImgIds(catIds=catIDs)
 iou_method = "bbox" # bbox, segm
-metric = MeanAveragePrecision(iou_type=iou_method, class_metrics=True)
+
+if iou_method == 'bbox':
+    metric = MeanAveragePrecision(iou_type=iou_method, box_format='xywh', class_metrics=True)
+elif iou_method == 'segm':
+    metric = MeanAveragePrecision(iou_type=iou_method, class_metrics=True)
+
 for rand_ID in tqdm(range(0, len(imgIds))):
     img_dict = coco.loadImgs(imgIds[rand_ID])[0]
     img_coco = cv2.imread(os.path.join(img_path, img_dict['file_name']))
