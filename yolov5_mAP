@@ -21,8 +21,8 @@ ort_session = onnxruntime.InferenceSession("weight/train-seg-relu-tidl-coco-0630
 output_names = [x.name for x in ort_session.get_outputs()]
 
 
-def coco_label_serious_proc(coco, size_, img_dict, catIDs):
-    class_mask_dict = {'person': [], 'bicycle': [], 'car': [],
+def coco_label_serious_proc(coco, size_, img_dict, catIDs, iou_method, test_img):
+    class_info_dict = {'person': [], 'bicycle': [], 'car': [],
                   'motorcycle': [], 'bus': [], 'train': [], 'truck': []}
     annIds = coco.getAnnIds(imgIds=img_dict['id'], catIds=catIDs, iscrowd=None)
     anns = coco.loadAnns(annIds)
@@ -37,38 +37,65 @@ def coco_label_serious_proc(coco, size_, img_dict, catIDs):
         ### 81cls
         obj_pts = []
         temp_img = np.zeros(size_[:2], np.uint8)
-        # print(anns[i])
-        for seg in anns[i]['segmentation']:
-            if isinstance(seg, str):
-                continue
-            pt = []
-            for idx in range(0, len(seg), 2):
-                pt.append([seg[idx], seg[idx+1]])
-            points = np.array(pt, np.int32)
-            obj_pts.append(points)
-        cv2.fillPoly(temp_img, pts=obj_pts, color=1)
-        # print(list(class_mask_dict.keys())[anns[i]['category_id'] - 1])
-        # plt.imshow(temp_img)
-        # plt.show()
-        temp_img = np.expand_dims(temp_img, axis=0)
-        class_mask_dict[list(class_mask_dict.keys())[anns[i]['category_id'] - 1]].append(temp_img) # coco
-        # class_mask_dict[list(class_mask_dict.keys())[anns[i]['category_id']]].append(temp_img) # google
-    return class_mask_dict
+        # print(anns[i]['bbox'])
+        if iou_method == 'segm':
+            for seg in anns[i]['segmentation']:
+                if isinstance(seg, str):
+                    continue
+                pt = []
+                for idx in range(0, len(seg), 2):
+                    pt.append([seg[idx], seg[idx+1]])
+                points = np.array(pt, np.int32)
+                obj_pts.append(points)
+            cv2.fillPoly(temp_img, pts=obj_pts, color=1)
+            # print(list(class_info_dict.keys())[anns[i]['category_id'] - 1])
+            # plt.imshow(temp_img)
+            # plt.show()
+            temp_img = np.expand_dims(temp_img, axis=0)
+            class_info_dict[list(class_info_dict.keys())[anns[i]['category_id'] - 1]].append(temp_img) # coco
+            # class_info_dict[list(class_info_dict.keys())[anns[i]['category_id']]].append(temp_img) # google
+        elif iou_method == 'bbox':
+            # fig, ax = plt.subplots(1, 1)
+            # rect = patches.Rectangle((int(anns[i]['bbox'][0]), int(anns[i]['bbox'][1])), int(anns[i]['bbox'][2]), int(anns[i]['bbox'][3]), edgecolor='r', facecolor='none')
+            # ax.add_patch(rect)
+            # ax.imshow(test_img)
+            # plt.show()
+            class_info_dict[list(class_info_dict.keys())[anns[i]['category_id'] - 1]].append(anns[i]['bbox']) # coco
+    return class_info_dict
+        
+        
 
-def model_label_serious_proc(mask, output, class_name):
-    class_mask_dict = {'person': [], 'bicycle': [], 'car': [],
+def model_label_serious_proc(mask, output, class_name, model_size, coco_size, iou_method, test_img):
+    class_info_dict = {'person': [], 'bicycle': [], 'car': [],
                   'motorcycle': [], 'bus': [], 'train': [], 'truck': []}
     class_score_dict = {'person': [], 'bicycle': [], 'car': [],
                   'motorcycle': [], 'bus': [], 'train': [], 'truck': []}
+
     for bbidx in range(len(output)):
         clsid = output[bbidx, 5]
-        class_mask_dict[class_name[int(clsid)]].append(mask[bbidx])
+        if iou_method == "segm":
+            class_info_dict[class_name[int(clsid)]].append(mask[bbidx])
+        elif iou_method == "bbox":
+            x_scale = coco_size[1] / model_size[1]
+            y_scale = coco_size[0] / model_size[0]
+            x1 = output[bbidx, 0] * x_scale
+            y1 = output[bbidx, 1] * y_scale
+            x2 = output[bbidx, 2] * x_scale
+            y2 = output[bbidx, 3] * y_scale
+            
+            # fig, ax = plt.subplots(1, 1)
+            # rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, edgecolor='r', facecolor='none')
+            # ax.add_patch(rect)
+            # ax.imshow(test_img)
+            # plt.show()
+            
+            class_info_dict[class_name[int(clsid)]].append([x1, y1, x2 - x1, y2 - y1])
         class_score_dict[class_name[int(clsid)]].append(output[bbidx, 4])
     
     # print(clsid)
     # print("%.2f" % score)
 
-    return class_mask_dict, class_score_dict
+    return class_info_dict, class_score_dict
 
 def overlay_masks_on_image(image, masks, alpha=0.5):
     """
@@ -262,11 +289,12 @@ coco = COCO(annFile)
 class_list = ['person', 'bicycle', 'car', 'motorcycle', 'bus', 'train', 'truck']
 catIDs = []
 imgIds = coco.getImgIds(catIds=catIDs)
-metric = MeanAveragePrecision(iou_type="segm", class_metrics=True)
+iou_method = "bbox" # bbox, segm
+metric = MeanAveragePrecision(iou_type=iou_method, class_metrics=True)
 for rand_ID in tqdm(range(0, len(imgIds))):
     img_dict = coco.loadImgs(imgIds[rand_ID])[0]
     img_coco = cv2.imread(os.path.join(img_path, img_dict['file_name']))
-    target_masks_dict = coco_label_serious_proc(coco, img_coco.shape, img_dict, catIDs)
+    target_masks_dict = coco_label_serious_proc(coco, img_coco.shape, img_dict, catIDs, iou_method, img_coco)
     
     im_orig = cv2.resize(img_coco, (640,640))
     im = im_orig.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
@@ -340,8 +368,9 @@ for rand_ID in tqdm(range(0, len(imgIds))):
             LOGGER.warning(f'WARNING ⚠️ NMS time limit {time_limit:.3f}s exceeded')
             break  # time limit exceeded
         if len(output[xi]):
-            masks = process_mask(ort_outs[3][xi], output[xi][:, 6:], output[xi][:, :4], im.shape[2:], img_coco.shape[:2], upsample=True)  # HWC
-            # masks = process_mask(ort_outs[3][xi], output[xi][:, 6:], output[xi][:, :4], img_coco.shape[:2], upsample=True)  # HWC
+            masks = []
+            if iou_method == 'segm':
+                masks = process_mask(ort_outs[3][xi], output[xi][:, 6:], output[xi][:, :4], im.shape[2:], img_coco.shape[:2], upsample=True)  # HWC
 
             ''' test display '''
             # for mask in masks:
@@ -350,7 +379,7 @@ for rand_ID in tqdm(range(0, len(imgIds))):
             #     plt.show()
             ''' end '''
             
-            res_masks_dict, res_score_dict = model_label_serious_proc(masks, output[xi], class_list)
+            res_masks_dict, res_score_dict = model_label_serious_proc(masks, output[xi], class_list, im.shape[2:], img_coco.shape[:2], iou_method, img_coco)
 
             temp_target_list = []
             temp_preds_list = []
@@ -369,14 +398,25 @@ for rand_ID in tqdm(range(0, len(imgIds))):
                     res_score_list.append(res_score)
                     cls_idx_pred_list.append(cls_idx)
             if preds_mask_list:
-                temp_target_list.append(dict(
-                    masks=torch.tensor(np.concatenate(target_mask_list)),
-                    labels=torch.tensor(cls_idx_target_list)
-                ))
-                temp_preds_list.append(dict(
-                    masks=torch.tensor(np.concatenate(preds_mask_list)),
-                    scores=torch.tensor(res_score_list),
-                    labels=torch.tensor(cls_idx_pred_list)
-                ))
+                if iou_method == 'segm':
+                    temp_target_list.append(dict(
+                        masks=torch.tensor(np.concatenate(target_mask_list)),
+                        labels=torch.tensor(cls_idx_target_list)
+                    ))
+                    temp_preds_list.append(dict(
+                        masks=torch.tensor(np.concatenate(preds_mask_list)),
+                        scores=torch.tensor(res_score_list),
+                        labels=torch.tensor(cls_idx_pred_list)
+                    ))
+                elif iou_method == 'bbox':
+                    temp_target_list.append(dict(
+                        boxes=torch.tensor(target_mask_list),
+                        labels=torch.tensor(cls_idx_target_list)
+                    ))
+                    temp_preds_list.append(dict(
+                        boxes=torch.tensor(preds_mask_list),
+                        scores=torch.tensor(res_score_list),
+                        labels=torch.tensor(cls_idx_pred_list)
+                    ))
                 metric.update(temp_preds_list, temp_target_list)
 pprint(metric.compute())
